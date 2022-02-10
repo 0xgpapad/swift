@@ -232,7 +232,7 @@ public:
 ///
 /// On 64 bit systems or if SWIFT_CONCURRENCY_ENABLE_PRIORITY_ESCALATION=1, this
 /// field needs to be 16 bytes aligned. Otherwise it needs to be 8 bytes aligned
-class ActiveTaskStatus {
+class alignas(2 * sizeof(void*)) ActiveTaskStatus {
   enum : uint32_t {
     /// The max priority of the task. This is always >= basePriority in the task
     PriorityMask = 0xFF,
@@ -466,12 +466,12 @@ public:
 };
 
 #if SWIFT_CONCURRENCY_ENABLE_PRIORITY_ESCALATION && SWIFT_POINTER_IS_4_BYTES
-static_assert(sizeof(ActiveTaskStatus) == 4 * sizeof(uintptr_t),
-  "ActiveTaskStatus is 4 words large");
+#define ACTIVE_TASK_STATUS_SIZE (4 * (sizeof(uintptr_t)))
 #else
-static_assert(sizeof(ActiveTaskStatus) == 2 * sizeof(uintptr_t),
-  "ActiveTaskStatus is 2 words large");
+#define ACTIVE_TASK_STATUS_SIZE (2 * (sizeof(uintptr_t)))
 #endif
+static_assert(sizeof(ActiveTaskStatus) == ACTIVE_TASK_STATUS_SIZE,
+  "ActiveTaskStatus is of incorrect size");
 
 /// The size of an allocator slab. We want the full allocation to fit into a
 /// 1024-byte malloc quantum. We subtract off the slab header size, plus a
@@ -493,7 +493,7 @@ struct AsyncTask::PrivateStorage {
 
   /// Storage for the ActiveTaskStatus. See doc for ActiveTaskStatus for size
   /// and alignment requirements.
-  char StatusStorage[sizeof(ActiveTaskStatus)];
+  alignas(2 * sizeof(void *)) char StatusStorage[sizeof(ActiveTaskStatus)];
 
   /// The allocator for the task stack.
   /// Currently 2 words + 8 bytes.
@@ -569,7 +569,7 @@ struct AsyncTask::PrivateStorage {
   }
 
   swift::atomic<ActiveTaskStatus> &_status() {
-     return reinterpret_cast<swift::atomic<ActiveTaskStatus>&> (this->StatusStorage);
+    return reinterpret_cast<swift::atomic<ActiveTaskStatus>&> (this->StatusStorage);
   }
 
   const swift::atomic<ActiveTaskStatus> &_status() const {
@@ -577,20 +577,10 @@ struct AsyncTask::PrivateStorage {
   }
 };
 
-#if SWIFT_CONCURRENCY_ENABLE_PRIORITY_ESCALATION || SWIFT_POINTER_IS_8_BYTES
-// This means that ActiveTaskStatus is 128 bits wide - it needs to be 16 byte
-// aligned in AsyncTask
-static_assert(sizeof(ActiveTaskStatus) == sizeof(uint64_t) * 2);
-static_assert(((offsetof(AsyncTask, Private) + offsetof(AsyncTask::PrivateStorage, StatusStorage)) % 16 == 0),
-   "StatusStorage is not 16 byte aligned in the AsyncTask");
-#else
-// This means that ActiveTaskStatus is 64 bits wide - it needs to be 8 byte
-// aligned in AsyncTask
-static_assert(sizeof(ActiveTaskStatus) == sizeof(uint32_t) * 2);
-static_assert(((offsetof(AsyncTask, Private) + offsetof(AsyncTask::PrivateStorage, StatusStorage)) % 8 == 0),
-   "StatusStorage is not 8 byte aligned in the AsyncTask");
-#endif
-
+// It will be aligned to 2 words on all platforms. On arm64_32, we have an
+// additional requirement where it is aligned to 4 words.
+static_assert(((offsetof(AsyncTask, Private) + offsetof(AsyncTask::PrivateStorage, StatusStorage)) % ACTIVE_TASK_STATUS_SIZE == 0),
+   "StatusStorage is not aligned in the AsyncTask");
 static_assert(sizeof(AsyncTask::PrivateStorage) <= sizeof(AsyncTask::OpaquePrivateStorage),
               "Task-private storage doesn't fit in reserved space");
 
